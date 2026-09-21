@@ -800,7 +800,7 @@ return fetchOrder({ orderId })
   .catch(() => null);
 ```
 
-**Run independent work in parallel.** Sequential `await`s that don't depend on
+**Run independent work in parallel (technically concurrently).** Sequential `await`s that don't depend on
 each other are wasted latency.
 
 ```js
