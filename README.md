@@ -5,7 +5,9 @@ it does, to someone reading it fresh. Every rule has a yes/no example.
 
 - [Naming](#naming)
 - [Style](#style)
+- [Comments and writing](#comments-and-writing)
 - [Functional JavaScript](#functional-javascript)
+- [TypeScript](#typescript)
 - [Modules](#modules)
 - [Third party services](#third-party-services)
 - [Database writes](#database-writes)
@@ -17,8 +19,11 @@ it does, to someone reading it fresh. Every rule has a yes/no example.
 - [Dates and time](#dates-and-time)
 - [Config and secrets](#config-and-secrets)
 - [React](#react)
+- [Markup and CSS](#markup-and-css)
+- [Accessibility](#accessibility)
 - [Testing](#testing)
 - [Scope of changes](#scope-of-changes)
+- [Commits and docs](#commits-and-docs)
 
 ## Naming
 
@@ -384,6 +389,99 @@ const markShipped = async ({ orderId, trackingNumber }) => {
 };
 ```
 
+**Imports run in one order.** Built-in modules (`node:fs`), then packages, then
+your own modules by path, then relative paths. When one module supplies both types
+and values, its `import type` line sits directly above its value line.
+
+```ts
+// yes
+import { readFile } from "node:fs/promises";
+import { z } from "zod";
+import type { Order } from "../lib/orders";
+import { fetchOrder } from "../lib/orders";
+
+// no
+import { fetchOrder, type Order } from "../lib/orders";
+import { readFile } from "node:fs/promises";
+```
+
+**One blank-line rhythm.** One blank line between top-level declarations. A doc
+comment touches the thing it documents. Inside a function, a blank line separates
+one step from the next, and only when there is more than one step.
+
+**Every file runs in one order.** Imports, then fixed values, then the types the
+file shares, then private helpers, each directly above its first caller, then the
+exports in the order a reader needs them. A lookup table with one reader sits
+directly above that reader, not at the top.
+
+## Comments and writing
+
+**Comments sit above what they explain, and say why.** A name can say what a line
+does. Only a comment can say why it's that way, which is what the next person needs
+before changing it. Every file opens with a block that says why it exists. Write for
+the next reader, not as a changelog: never "changed in review" or "was X before".
+When you change code under a comment, rewrite the comment instead of adding a second.
+
+```js
+/**
+ * yes
+ * Why this file exists: all logging goes through here so card numbers are
+ * masked once, in one place, instead of at every call site.
+ */
+
+// no
+// Logger utilities.
+```
+
+**No comment at the end of a line of code.** It pushes the line past the margin and
+the formatter splits it in odd places. Put it on its own line above.
+
+**Disabled code is the one use of `//`.** Each disabled line starts with `//` so the
+editor's toggle-comment key brings it back, and a doc above it says what's hidden,
+why, and how to restore it.
+
+**Counts in comments go stale.** A count or a list in a comment must match the code,
+or be left out: "the functions it exports", not "these five functions".
+
+**A comment is understood in one read.** Someone who has never seen the repo reads
+it once, at normal speed, and could explain it to a colleague.
+
+- Open with what it is, in under about 12 words.
+- One case per paragraph or bullet, each opening with its condition ("Normally: …",
+  "If the request times out: …"). Never blend two cases into one sentence.
+- Short sentences, one idea each. A sentence with more than one "and", "so",
+  "which" or "because" gets split. No parentheses carrying a second idea.
+- Name who did what: the user, their browser, our server, the vendor. Never a bare
+  "it" when it could mean two things.
+- End with what goes wrong without the code, in everyday terms: "Sending again
+  would charge the card twice."
+- Plain words, never shorthand only the author knows.
+- Cut what the code already says. A good rewrite is usually shorter.
+
+```js
+/**
+ * yes
+ * When to start a retry's one-minute wait.
+ *
+ * Normally: when the earlier try ended. Our server sent the browser that
+ * time, and the form sends it back.
+ *
+ * If the form sends no time: the browser lost its connection during the
+ * earlier try. Start the wait now.
+ */
+
+/**
+ * no
+ * A retry with no moment is one whose answer never reached the browser, so
+ * the server may still be sending it. It waits a minute from now, and the
+ * answer stamps that moment so the next press is measured from it.
+ */
+```
+
+The same rules hold for test titles, READMEs, commit messages, pull request
+descriptions, and an AI assistant's replies. A reply opens with the answer, takes
+one point at a time, and says plainly what was done and what wasn't.
+
 ## Functional JavaScript
 
 **Pure by default.** A function takes its inputs as arguments and returns a value.
@@ -588,6 +686,95 @@ const toOrderPayload = (req) => ({
 });
 ```
 
+## TypeScript
+
+**Use `type` aliases, not `interface`.** One way to declare a shape. `extends`
+becomes `&`. The exception is a global declaration that only works by merging into
+a built-in, like adding a field to `Window`.
+
+```ts
+// yes
+type Order = { id: string; totalCents: number };
+type ShippedOrder = Order & { trackingNumber: string };
+
+// no
+interface Order { id: string; totalCents: number }
+```
+
+**Primitives, never boxed types.** `number`, `string`, `boolean`. Never `Number`,
+`String`, `Boolean`, or `Object`. For "some object" use `object` or a real type.
+
+**No `any`. Use `unknown` and narrow.** `any` turns off the checker for that value
+and everything derived from it. Never `as any`, `@ts-ignore`, or `value!`. Assign
+`response.json()` to `unknown` right away, so the compiler forces a parse step.
+
+```ts
+// yes
+const json: unknown = await response.json();
+const orders = parseOrderListResponse({ json }); // throws or returns Order[]
+
+// no
+const json: any = await response.json();
+return json.orders;
+```
+
+**Callbacks return `void` and take required parameters.** A callback whose return is
+ignored is `() => void`, never `() => any`. A callback that ignores trailing
+arguments is already legal, so don't mark them optional.
+
+```ts
+// yes
+type OnOrderChange = (order: Order) => void;
+
+// no
+type OnOrderChange = (order?: Order) => any;
+```
+
+**No overloads.** Unions and optional parameters say the same thing in one
+signature. No unused generic parameters.
+
+**String literal unions, not `enum`.** Enums emit runtime code and don't line up
+with the strings an API sends. Derive the type from an `as const` array so the type
+and the runtime list can't disagree, and check lookup tables with `satisfies`.
+
+```ts
+export const ORDER_STATUSES = ["pending", "shipped", "refunded"] as const;
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+export const ORDER_STATUS_LABELS = {
+  pending: "Pending",
+  shipped: "Shipped",
+  refunded: "Refunded",
+} satisfies Record<OrderStatus, string>;
+```
+
+**Discriminated unions for anything with states.** One `status` field, and data
+that only exists in one state lives only in that branch. Three booleans let you
+write a state that's both loading and failed.
+
+```ts
+// yes
+type OrdersState =
+  | { status: "loading" }
+  | { status: "ready"; orders: readonly Order[] }
+  | { status: "error"; message: string };
+
+// no
+type OrdersState = { isLoading: boolean; orders?: Order[]; error?: string };
+```
+
+**`readonly` on anything that crosses a function boundary.** It makes the compiler
+enforce "never mutate inputs", so a `push` fails to compile instead of surfacing as
+a bug somewhere else.
+
+**Types live in one place.** Domain types in one module, raw API types beside the
+wrapper that receives them. No file declares its own copy of `Order`. Use the
+types your framework generates instead of hand-writing ones that drift.
+
+**Rules that can be config are config.** `strict: true`, plus
+`noUncheckedIndexedAccess`. ESLint: `no-explicit-any`, `no-floating-promises`,
+`no-unnecessary-condition`, `switch-exhaustiveness-check`,
+`consistent-type-imports`. Prose is for the rules a linter can't check.
+
 ## Modules
 
 **Named exports, not default exports.** The name at the import matches the name at
@@ -621,6 +808,10 @@ lib/utils.js
 lib/helpers.js
 lib/common.js
 ```
+
+**Don't generalize for two of anything.** Two screens don't justify a generic
+table component or a data-loading abstraction. Two plain, similar pieces of code are
+easier to read than one clever one.
 
 ## Third party services
 
@@ -784,6 +975,22 @@ throw new Error("Request failed");
 throw new Error(`Stripe rejected key ${apiKey}`);
 ```
 
+**Three kinds of failure, three responses.** One generic handler can't give the
+user the right next step.
+
+| Failure | Response |
+| --- | --- |
+| Expected: validation, a vendor's 400 | 400 naming the field; the user's input is kept so they can fix it |
+| Unexpected: 5xx, network, parse | 502 with a plain message, saying the outcome is unknown when the write may have happened; logged with the request id |
+| Stale: data changed since the page loaded | re-validate on the server against fresh data and return a specific message |
+
+**Every state the user can land in has a face.** Loading, empty, error, success,
+partial success. A blank area while loading looks broken. An error with no retry is
+a dead end.
+
+**Say what actually happened.** If a vendor answers "pending", the user sees
+"submitted", not "done". Show values from a refetch, not from local arithmetic.
+
 ## Async
 
 **`await`, not `.then`.** No mixing the two in one function, no promise chains as
@@ -851,6 +1058,20 @@ analytics
 analytics.track({ userId, event: "order_shipped" }); // settles after the response
 return res.json({ ok: true });
 ```
+
+**Timeouts on every network call.** A hung upstream must not hang the request.
+
+```js
+// yes
+const response = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+
+// no
+const response = await fetch(url); // waits forever on a stuck server
+```
+
+**Don't double-submit.** Keep one in-flight flag while a write is pending, and
+have the handler return early while it's set. A fast second click otherwise sends a
+second write.
 
 **`async` only if it awaits.** A function that returns a promise without awaiting
 anything doesn't need the keyword.
@@ -940,6 +1161,12 @@ db.update({ path: `orders/${orderId}`, value });
 // no
 db.update({ path: `orders/${req.body.orderId}`, value }); // "x/../../users" escapes the record
 ```
+
+**The server re-validates against fresh data.** Validate on the client for feedback
+and on the server for truth, from the same function. The client's copy can be stale.
+
+**Read only the fields you need.** Extra fields in a response are ignored. A missing
+required field is an error at the parser, not three layers down.
 
 ## Idempotency
 
@@ -1033,6 +1260,9 @@ const formatCents = ({ cents, currency }) =>
 // no
 const total = (totalCents / 100).toFixed(2); // now a string, and someone will do math on it
 ```
+
+Pass an explicit locale to every formatter. The server's default locale is not the
+user's.
 
 **Amounts travel with their currency.**
 
@@ -1275,6 +1505,71 @@ state when the list reorders.
 {orders.map((order, index) => <OrderRow key={index} order={order} />)}
 ```
 
+## Markup and CSS
+
+**Semantic elements first, `div` last.** `header`, `nav`, `main`, `section` with a
+heading, `ul`/`li`, `dl` for label-value pairs, `form`, `label`,
+`button type="submit"`, `dialog`. A `div` is for layout only.
+
+**One heading hierarchy.** One `h1` per view, no skipped levels. Pick the tag for
+what it means and size it with CSS.
+
+**Design tokens only.** Every color, spacing, radius, and font size comes from the
+token file. No raw hex or pixel values.
+
+```css
+/* yes */
+.row {
+  padding: var(--space-4);
+  border: 1px solid var(--border-color);
+}
+
+/* no */
+.row {
+  padding: 15px;
+  border: 1px solid #d7dee4;
+}
+```
+
+**State classes start with `is-`.** `.is-inactive`, `.is-invalid`. They read as
+different from structure classes at a glance.
+
+**Layout with flex or grid plus `gap`.** The parent spaces its children, not
+per-element margins. Mobile first: the base rule is the phone layout, and a
+`min-width` media query adds the wide one.
+
+**Digits line up.** `font-variant-numeric: tabular-nums` wherever numbers stack in
+a column.
+
+**Respect `prefers-reduced-motion`.** Skip transitions when it's set.
+
+## Accessibility
+
+**Every control has a real label.** `<label for>` paired with an `id`. A placeholder
+disappears as soon as someone types, so it can't be the label.
+
+**Errors are announced and attached.** A field error sits in an element the control
+references with `aria-describedby`, and the control gets `aria-invalid="true"`.
+Messages that appear after submitting live in an `aria-live="polite"` region.
+
+**Everything works from the keyboard.** Buttons are `<button>`, links are
+`<a href>`, no clickable divs. A dialog traps focus while open, closes on Escape,
+and returns focus to what opened it. A button that isn't ready yet uses
+`aria-disabled="true"` plus a click guard instead of `disabled`, so a keyboard user
+can still land on it and hear why.
+
+**Visible focus, always.** Never `outline: none` without a `:focus-visible`
+replacement at least as visible.
+
+**Status is never color alone.** Pair color with text or a sign: a "Paused" pill, a
+minus sign on a negative amount. Decorative icons get `aria-hidden="true"`.
+
+**Text meets WCAG AA contrast.** 4.5:1 for normal text, 3:1 only for large text.
+Measure against the background the text actually sits on.
+
+**Run the checkers.** Accessibility lint warnings are errors, and an automated
+checker like axe runs on every view.
+
 ## Testing
 
 **Pure functions get plain tests.** Input in, assert the output. No mocks, no setup.
@@ -1344,6 +1639,10 @@ test("webhook test 2", ...);
 test("refund works", ...);
 ```
 
+**One command verifies everything.** Typecheck, lint, and every test suite run
+from one script, green before every commit. If verifying takes four commands, one
+gets skipped.
+
 ## Scope of changes
 
 **Change only what the task requires.** No refactoring adjacent code, no hoisting
@@ -1385,3 +1684,49 @@ delete supporting code when the ask is explicitly to delete it.
 // no
 // button deleted, along with the handler, the useState, the props, and the CSS
 ```
+
+**Add a dependency only when it replaces more code than it adds.** Nothing the
+platform already covers: `Intl` for formatting, `<dialog>` for modals, `fetch` with
+`AbortSignal` for timeouts.
+
+## Commits and docs
+
+**Commits read like a changelog.** Small, one concern each, an imperative subject
+under 72 characters, and a body that says why when it isn't obvious.
+
+**Docs change in the same pull request as the code.** A pull request that changes
+behavior and leaves the README describing the old behavior isn't finished.
+
+**Record decisions with their reasons.** What was chosen, what else was considered,
+why this one, and what would change the answer. Link each to the line of code that
+carries it out. If there's no line to link, the decision hasn't reached the code.
+
+**Arrange a README from the outside in.** What it does, how to run it (prerequisites
+with exact versions), how it works, where the code is, why it's built this way, then
+quality (security, accessibility, testing). Write it for someone who has never seen
+the repo.
+
+**One diagram per mechanism, each followed by how to read it.** Plain-English
+labels, code names in parentheses only where they help. Number the steps so the
+walkthrough can point at one. Explain only the parts that take thought.
+
+**Keep diagrams readable.** Flow left to right with a few words per box. A sentence
+goes in a table under the chart, matched to its box. A chart that's still tangled
+becomes two.
+
+**Collapse reference material, never diagrams.** Long tables and rule lists go in
+a `<details>` toggle with a one-line summary. Diagrams and anything a quick reader
+must see stay visible.
+
+**Restructuring moves text, it doesn't remove it.** Removing a detail is its own
+named change, so a reviewer can tell what moved from what vanished.
+
+**Render every diagram before pushing.** In Mermaid, keep semicolons out of labels:
+a semicolon ends a statement, even inside quotes.
+
+**Every claim in the prose matches the picture.** If a tidy sentence doesn't fit
+every arrow in the diagram, the sentence goes.
+
+**Run the plain-English pass after every edit.** New text brings back stacked
+fragments, tacked-on negations, and flourishes in place of plain words. Check the
+changed sections before the pull request, not just the first draft.
