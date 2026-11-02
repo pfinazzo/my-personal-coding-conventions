@@ -931,6 +931,75 @@ db.update({ path: `orders/${orderId}`, value: { status, updated_at } });
 db.update({ path: "/", value: { [`orders/${orderId}/status`]: status } });
 ```
 
+**Writes that must succeed together go in one transaction.** Two records that
+must agree are written in one transaction, so both land or neither does. When the
+second write belongs to another service, write the record and an outbox row in
+one transaction, and a worker sends the outbox row. A crash between two plain
+writes otherwise leaves an order marked paid with no invoice.
+
+```js
+// yes
+await db.transaction(async (tx) => {
+  await tx.update({ path: `orders/${orderId}`, value: { status: "paid" } });
+  await tx.set({ path: `invoices/${orderId}`, value: invoice });
+});
+
+// no
+await db.update({ path: `orders/${orderId}`, value: { status: "paid" } });
+await db.set({ path: `invoices/${orderId}`, value: invoice }); // a crash here leaves a paid order with no invoice
+```
+
+**Load related rows in one query, never one per row.** Collect the ids, load them
+in one query (`WHERE id IN (...)`, or a loader that batches), then look each one
+up from a table. A query inside a loop runs once per row, so a page of a hundred
+orders sends a hundred and one queries. Running them in parallel does not fix
+that.
+
+```js
+// yes
+const customerIds = orders.map(({ customerId }) => customerId);
+const customers = await fetchCustomers({ customerIds }); // one query: WHERE id IN (...)
+const customersById = customers.reduce((acc, customer) => ({ ...acc, [customer.id]: customer }), {});
+const rows = orders.map((order) => ({ ...order, customer: customersById[order.customerId] }));
+
+// no
+const rows = await Promise.all(
+  orders.map(async (order) => ({ ...order, customer: await fetchCustomer({ customerId: order.customerId }) })),
+); // one query per order, even in parallel
+```
+
+**No unbounded queries.** Every query over a table that grows carries a limit.
+Every query that runs in production has an index that covers its filter and sort.
+A query with no limit loads the whole table into memory one day. A query with no
+index scans the whole table on every request.
+
+```js
+// yes
+const orders = await db.query({ path: "orders", where: { accountId }, orderBy: "createdAt", limit: PAGE_SIZE }); // index on (accountId, createdAt)
+
+// no
+const orders = (await db.query({ path: "orders" })).filter((order) => order.accountId === accountId); // every row, every time
+```
+
+**Every list endpoint pages.** A list route takes a limit with a maximum and a
+cursor, and returns the page with the cursor for the next one. It never returns
+every row. A route that returns the whole list works on ten rows and times out on
+the first account with ten thousand.
+
+```js
+// yes
+const MAX_PAGE_SIZE = 100;
+
+router.get("/orders", async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+  const { orders, nextCursor } = await listOrders({ accountId: req.user.accountId, cursor: req.query.cursor, limit });
+  return res.json({ orders, nextCursor });
+});
+
+// no
+router.get("/orders", async (req, res) => res.json(await listAllOrders({ accountId: req.user.accountId }))); // every row, every time
+```
+
 ## Error handling
 
 **Throw for broken, return empty for absent.** A missing record is not an error:
@@ -1334,6 +1403,25 @@ const order = await withRetries({ run: () => fetchOrder({ orderId }) });
 
 // no
 await withRetries({ run: () => mailer.send({ to, template: "receipt" }) }); // three receipts
+```
+
+**Retries use backoff and jitter.** Wait longer after each failed try, add a
+random amount to each wait, and stop after a fixed number of tries. If the server
+sends `Retry-After`, wait that long instead. A fixed wait sends every retrying
+client back at the same moment, which is what knocked the server over.
+
+```js
+// yes
+const BASE_DELAY_MS = 200;
+const MAX_TRIES = 4;
+
+const delayFor = ({ attempt, retryAfterMs }) =>
+  retryAfterMs ?? BASE_DELAY_MS * 2 ** attempt + Math.random() * BASE_DELAY_MS;
+
+const order = await withRetries({ run: () => fetchOrder({ orderId }), maxTries: MAX_TRIES, delayFor });
+
+// no
+const order = await withRetries({ run: () => fetchOrder({ orderId }), delayMs: 1000, maxTries: Infinity }); // same second, every client, forever
 ```
 
 ## Money and numbers
