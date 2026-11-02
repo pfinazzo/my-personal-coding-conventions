@@ -1381,7 +1381,10 @@ await db.update({
 ```
 
 **Pass idempotency keys to vendors that accept them.** Payments especially. Build
-the key from what the operation is, so a retry sends the same key.
+the key from what the operation is, so a retry sends the same key. Send it in
+the vendor's own header or field, such as a header named `Idempotency-Key`, in
+the format and with the lifetime the vendor's documentation gives. Read the docs
+for the exact name and rules, never invent them.
 
 ```js
 // yes

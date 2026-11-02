@@ -117,7 +117,7 @@ Follow every rule below in any repo. Copy this file into a project and put proje
 
 - **Webhooks arrive more than once. Dedupe by event id.** Claim the event id before acting (insert if absent), return 200 on a duplicate, and release the claim if handling fails so the retry can run.
 - **Writes are safe to run twice.** Set final values instead of incrementing or appending blind. Key records by a natural id: `db.set({ path: \`invoices/${orderId}\`, value })`, never `db.push` or `count + 1`.
-- **Pass idempotency keys to vendors that accept them.** Build the key from the operation so a retry sends the same key: `idempotencyKey: \`order-${orderId}-charge\``. Never omit it, never `randomUUID()`.
+- **Pass idempotency keys to vendors that accept them.** Build the key from the operation so a retry sends the same key: `idempotencyKey: \`order-${orderId}-charge\``. Never omit it, never `randomUUID()`. Send it in the vendor's own header or field (for example a header named `Idempotency-Key`), in the format and with the lifetime the vendor's docs require. Read the docs for the exact name and rules, never invent them.
 - **Only retry what's idempotent.** Retry reads and keyed writes. Never retry a call that isn't safe to repeat and has no key (e.g. sending an email). A write someone may retry by hand carries a reference number that makes the repeat safe.
 - **Retries use backoff and jitter.** Wait longer after each failed try, add a random amount to each wait, and stop after a fixed number of tries. If the server sends `Retry-After`, wait that long instead.
 
