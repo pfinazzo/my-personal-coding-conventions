@@ -76,6 +76,10 @@ Follow every rule below in any repo. Copy this file into a project and put proje
 ## Database writes
 
 - **Scope every write to the record it changes.** `db.update({ path: \`orders/${orderId}\`, value })`, never a root-level or table-wide multi-path update to change one record. Existing broad writes are not license to add new ones. This applies to one-off scripts too.
+- **Writes that must succeed together go in one transaction.** Two records that must agree are written in one transaction, so both land or neither does. When the second write belongs to another service, write the record and an outbox row in one transaction, and a worker sends the outbox row.
+- **Load related rows in one query, never one per row.** Collect the ids, load them in one query (`WHERE id IN (...)`, or a loader that batches), then look each one up from a table. Never a query inside a loop, even with `Promise.all`.
+- **No unbounded queries.** Every query over a table that grows carries a limit. Every query that runs in production has an index that covers its filter and sort.
+- **Every list endpoint pages.** A list route takes a limit with a maximum and a cursor, and returns the page with the cursor for the next one. It never returns every row.
 
 ## Error handling
 
@@ -113,8 +117,9 @@ Follow every rule below in any repo. Copy this file into a project and put proje
 
 - **Webhooks arrive more than once. Dedupe by event id.** Claim the event id before acting (insert if absent), return 200 on a duplicate, and release the claim if handling fails so the retry can run.
 - **Writes are safe to run twice.** Set final values instead of incrementing or appending blind. Key records by a natural id: `db.set({ path: \`invoices/${orderId}\`, value })`, never `db.push` or `count + 1`.
-- **Pass idempotency keys to vendors that accept them.** Build the key from the operation so a retry sends the same key: `idempotencyKey: \`order-${orderId}-charge\``. Never omit it, never `randomUUID()`.
+- **Pass idempotency keys to vendors that accept them.** Build the key from the operation so a retry sends the same key: `idempotencyKey: \`order-${orderId}-charge\``. Never omit it, never `randomUUID()`. Send it in the vendor's own header or field (for example a header named `Idempotency-Key`), in the format and with the lifetime the vendor's docs require. Read the docs for the exact name and rules, never invent them.
 - **Only retry what's idempotent.** Retry reads and keyed writes. Never retry a call that isn't safe to repeat and has no key (e.g. sending an email). A write someone may retry by hand carries a reference number that makes the repeat safe.
+- **Retries use backoff and jitter.** Wait longer after each failed try, add a random amount to each wait, and stop after a fixed number of tries. If the server sends `Retry-After`, wait that long instead.
 
 ## Money and numbers
 
